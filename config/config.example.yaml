@@ -1,0 +1,11 @@
+database:
+  connection_string: key=value key=value
+log:
+  level: debug
+s3:
+  use_default: false
+  region: us-east-1
+  access_key: minioadmin
+  secret_Key: minioadmin
+  audio_bucket: audio
+  base_endpoint: http://127.0.0.1:9000

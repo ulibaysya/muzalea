@@ -1,0 +1,113 @@
+openapi: 3.2.0
+info:
+  version: 0.1.0
+  title: Muzalea
+  license:
+    name: MIT
+tags:
+  - name: audio
+paths:
+  /audio:
+    get:
+      summary: List audio
+      operationId: getAudio
+      tags:
+        - audio
+      parameters:
+        - name: limit
+          in: query
+          description: >-
+            How many items to return at one time. Default is 10.
+          required: false
+          schema:
+            type: integer
+            maximum: 100
+      responses:
+        "200":
+          description: Audio list
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: "#/components/schemas/AudioList"
+    post:
+      summary: Create new audio
+      operationId: postAudio
+      tags:
+        - audio
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                meta:
+                  $ref: "#/components/schemas/AudioBase"
+                audio:
+                  type: string
+                  format: binary
+            encoding:
+              audio:
+                contentType: audio/ogg, audio/mpeg, audio/aac, audio/mp4, audio/wav, audio/webm
+              meta:
+                contentType: application/json; charset=utf-8
+      responses:
+        "201":
+          description: Link to created audio
+          headers:
+            Location:
+              schema:
+                type: string
+  /audio/{audio}:
+    get:
+      summary: Show audio metadata
+      operationId: getAudioAudio
+      tags:
+        - audio
+      responses:
+        "200":
+          description: Audio metadata
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: "#/components/schemas/AudioMeta"
+  /audio/{audio}/stream:
+    get:
+      summary: Show audio stream link
+      operationId: getAudioAudioStream
+      tags:
+        - audio
+      responses:
+        "200":
+          description: Audio stream link
+          content:
+            application/json; charset=utf-8:
+              $ref: "#/components/schemas/Stream"
+components:
+  schemas:
+    AudioBase:
+      type: object
+      properties:
+        name:
+          type: string
+        author:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+    AudioMeta:
+      allOf:
+        - type: object
+          properties:
+            id:
+              type: integer
+              format: int64
+        - $ref: "#/components/schemas/AudioBase"
+    AudioList:
+      type: array
+      maxItems: 100
+      items:
+        $ref: "#/components/schemas/AudioMeta"
+    Stream:
+      type: string
+      format: uri
