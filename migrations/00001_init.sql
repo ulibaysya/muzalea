@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS audio (
 CREATE TABLE IF NOT EXISTS audio_tags (
 	audio_id BIGINT NOT NULL REFERENCES audio(id) ON DELETE CASCADE,
 	tag TEXT NOT NULL,
-	UNIQUE (audio_id, tag)
+	CONSTRAINT audio_tags_audio_id_tag_key UNIQUE (audio_id, tag)
 );
 
 -- +goose Down

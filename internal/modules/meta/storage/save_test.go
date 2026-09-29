@@ -1,10 +1,161 @@
 package storage
 
 import (
-	"github.com/pashagolub/pgxmock/v5"
-	"slices"
+	"errors"
+	"log/slog"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/pashagolub/pgxmock/v5"
+	"github.com/ulibaysya/muzalea/internal/pkg/compensate"
 )
+
+func assertFailureResults(t *testing.T, err, target error, id int64, compFunc compensate.Func) {
+	t.Helper()
+
+	if !errors.Is(err, target) {
+		t.Fatalf("expected err %v, got %v", target, err)
+	}
+
+	if id != 0 {
+		t.Fatalf("expected id 0, got %v", id)
+	}
+
+	if compFunc != nil {
+		t.Fatalf("unexpected non-nil compensation func")
+	}
+}
+
+func TestSave_FailBegin(t *testing.T) {
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	ctx := t.Context()
+	name := "name"
+	author := "author"
+	tags := []string{
+		"tag1",
+		"tag2",
+	}
+
+	someErr := errors.New("some error")
+
+	mock.ExpectBegin().
+		WillReturnError(someErr)
+
+	returnedID, returnedCompFunc, returnedErr := New(slog.Default(), mock).Save(ctx, name, author, tags)
+
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("asserting mock expectations: %v", err)
+	}
+	assertFailureResults(t, returnedErr, someErr, returnedID, returnedCompFunc)
+}
+
+func TestSave_FailInsertName(t *testing.T) {
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	ctx := t.Context()
+	name := "name"
+	author := "author"
+	tags := []string{
+		"tag1",
+		"tag2",
+	}
+
+	someErr := errors.New("some error")
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`INSERT INTO audio (name, author) VALUES ($1, $2) RETURNING id;`).
+		WithArgs(name, author).
+		WillReturnError(someErr)
+	mock.ExpectRollback()
+
+	returnedID, returnedCompFunc, returnedErr := New(slog.Default(), mock).Save(ctx, name, author, tags)
+
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("asserting mock expectations: %v", err)
+	}
+	assertFailureResults(t, returnedErr, someErr, returnedID, returnedCompFunc)
+}
+
+func TestSave_FailInsertTags(t *testing.T) {
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	ctx := t.Context()
+	name := "name"
+	author := "author"
+	tags := []string{
+		"tag1",
+		"tag2",
+	}
+
+	id := int64(123)
+	someErr := errors.New("some error")
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`INSERT INTO audio (name, author) VALUES ($1, $2) RETURNING id;`).
+		WithArgs(name, author).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(id))
+	mock.ExpectExec(`INSERT INTO audio_tags (audio_id, tag) VALUES ($1, $2), ($3, $4);`).
+		WithArgs(id, tags[0], id, tags[1]).
+		WillReturnError(someErr)
+	mock.ExpectRollback()
+
+	returnedID, returnedCompFunc, returnedErr := New(slog.Default(), mock).Save(ctx, name, author, tags)
+
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("asserting mock expectations: %v", err)
+	}
+	assertFailureResults(t, returnedErr, someErr, returnedID, returnedCompFunc)
+}
+
+func TestSave_FailCommit(t *testing.T) {
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	ctx := t.Context()
+	name := "name"
+	author := "author"
+	tags := []string{
+		"tag1",
+		"tag2",
+	}
+
+	id := int64(123)
+	someErr := errors.New("some error")
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`INSERT INTO audio (name, author) VALUES ($1, $2) RETURNING id;`).
+		WithArgs(name, author).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(id))
+	mock.ExpectExec(`INSERT INTO audio_tags (audio_id, tag) VALUES ($1, $2), ($3, $4);`).
+		WithArgs(id, tags[0], id, tags[1]).
+		WillReturnResult(pgxmock.NewResult("INSERT", 2))
+	mock.ExpectCommit().
+		WillReturnError(someErr)
+	mock.ExpectRollback()
+
+	returnedID, returnedCompFunc, returnedErr := New(slog.Default(), mock).Save(ctx, name, author, tags)
+
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("asserting mock expectations: %v", err)
+	}
+	assertFailureResults(t, returnedErr, someErr, returnedID, returnedCompFunc)
+}
 
 func TestSave_Success(t *testing.T) {
 	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherEqual))
@@ -13,6 +164,7 @@ func TestSave_Success(t *testing.T) {
 	}
 	defer mock.Close()
 
+	ctx := t.Context()
 	name := "name"
 	author := "author"
 	tags := []string{
@@ -20,7 +172,7 @@ func TestSave_Success(t *testing.T) {
 		"tag2",
 	}
 
-	id := int64(5)
+	id := int64(123)
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(`INSERT INTO audio (name, author) VALUES ($1, $2) RETURNING id;`).
@@ -30,10 +182,9 @@ func TestSave_Success(t *testing.T) {
 		WithArgs(id, tags[0], id, tags[1]).
 		WillReturnResult(pgxmock.NewResult("INSERT", 2))
 	mock.ExpectCommit()
+	mock.ExpectRollback().WillReturnError(pgx.ErrTxClosed)
 
-	ctx := t.Context()
-
-	storage := New(mock)
+	storage := New(slog.Default(), mock)
 	returnedID, returnedCompFunc, returnedErr := storage.Save(ctx, name, author, tags)
 
 	if err = mock.ExpectationsWereMet(); err != nil {
@@ -44,7 +195,7 @@ func TestSave_Success(t *testing.T) {
 		t.Fatalf("expected err nil, got %v", returnedErr)
 	}
 
-	if id != returnedID {
+	if returnedID != id {
 		t.Fatalf("expected id %v, got %v", id, returnedID)
 	}
 
@@ -62,50 +213,5 @@ func TestSave_Success(t *testing.T) {
 
 	if err = mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("asserting mock expectations: %v", err)
-	}
-}
-
-func TestSave_BuildTagsInsertSQL(t *testing.T) {
-	tests := []struct {
-		name    string
-		audioID int64
-		tags    []string
-		sql     string
-		args    []any
-	}{
-		{
-			name: "NilTags",
-			tags: nil,
-			sql:  "",
-			args: nil,
-		},
-		{
-			name:    "OneTag",
-			audioID: 5,
-			tags:    []string{"tag1"},
-			sql:     `INSERT INTO audio_tags (audio_id, tag) VALUES ($1, $2);`,
-			args:    []any{int64(5), "tag1"},
-		},
-		{
-			name:    "SeveralTags",
-			audioID: 5,
-			tags:    []string{"tag1", "tag2"},
-			sql:     `INSERT INTO audio_tags (audio_id, tag) VALUES ($1, $2), ($3, $4);`,
-			args:    []any{int64(5), "tag1", int64(5), "tag2"},
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			returnedSQL, returnedArgs := buildTagsInsertSQL(test.audioID, test.tags)
-
-			if test.sql != returnedSQL {
-				t.Fatalf("expected sql %v, got %v", test.sql, returnedSQL)
-			}
-
-			if !slices.Equal(test.args, returnedArgs) {
-				t.Fatalf("args are not equal\n \t expected: %v\n \t got: %v", test.args, returnedArgs)
-			}
-		})
 	}
 }

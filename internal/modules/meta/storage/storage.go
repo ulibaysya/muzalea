@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -19,11 +20,13 @@ type Tx interface {
 }
 
 type Storage struct {
-	db DB
+	logger *slog.Logger
+	db     DB
 }
 
-func New(db DB) Storage {
+func New(logger *slog.Logger, db DB) Storage {
 	return Storage{
-		db: db,
+		logger: logger,
+		db:     db,
 	}
 }

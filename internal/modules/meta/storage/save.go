@@ -4,42 +4,42 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/ulibaysya/muzalea/internal/modules/meta"
 	"github.com/ulibaysya/muzalea/internal/pkg/compensate"
+	pkgslog "github.com/ulibaysya/muzalea/pkg/slog"
 )
 
-func (s Storage) Save(ctx context.Context, name, author string, tags []string) (id int64, cf compensate.Func, err error) {
+func (s Storage) Save(ctx context.Context, name, author string, tags []string) (int64, compensate.Func, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return 0, nil, fmt.Errorf("beginning tx: %v", err)
+		return 0, nil, fmt.Errorf("beginning tx: %w", err)
 	}
 	defer func() {
-		if rollbackErr := tx.Rollback(ctx); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) && err != nil {
-			err = fmt.Errorf("rollbacking transaction: %v", rollbackErr)
+		if rollbackErr := tx.Rollback(ctx); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+			s.logger.LogAttrs(ctx, slog.LevelError, "rollbacking transaction", pkgslog.Error("error", rollbackErr))
 		}
 	}()
 
 	const nameInsertSQL = `INSERT INTO audio (name, author) VALUES ($1, $2) RETURNING id;`
 	var audioID int64
 	if err = tx.QueryRow(ctx, nameInsertSQL, name, author).Scan(&audioID); err != nil {
-		return 0, nil, fmt.Errorf("querying name and author insert: %v", err)
+		return 0, nil, fmt.Errorf("inserting name and author: %w", err)
 	}
 
-	if tagsLen := len(tags); tagsLen != 0 {
-		tagsInsertSQL, args := buildTagsInsertSQL(audioID, tags)
-		res, err := tx.Exec(ctx, tagsInsertSQL, args...)
-		if err != nil {
-			return 0, nil, fmt.Errorf("inserting tags: %v", err)
-		}
-		if affected := res.RowsAffected(); affected != int64(tagsLen) {
-			return 0, nil, fmt.Errorf("unexpected number of rows is affected when inserting tags: expected %v, got %v", tagsLen, affected)
+	if len(tags) != 0 {
+		if err = s.insertTags(ctx, tx, audioID, tags); err != nil {
+			return 0, nil, fmt.Errorf("inserting tags: %w", err)
 		}
 	}
 
 	if err = tx.Commit(ctx); err != nil {
-		return 0, nil, fmt.Errorf("commiting transaction: %v", err)
+		return 0, nil, fmt.Errorf("commiting transaction: %w", err)
 	}
 
 	return audioID, saveCompensator{
@@ -57,11 +57,30 @@ func (s saveCompensator) compensate(ctx context.Context) error {
 	const sql = `DELETE FROM audio WHERE id = $1;`
 	res, err := s.db.Exec(ctx, sql, s.audioID)
 	if err != nil {
-		return fmt.Errorf("deleting audio: %v", err)
+		return fmt.Errorf("deleting audio: %w", err)
 	}
 
 	if affected := res.RowsAffected(); affected != 1 {
-		return fmt.Errorf("not 1 row affected when deleting: %v", affected)
+		return fmt.Errorf("not 1 row affected when deleting audio: %v", affected)
+	}
+
+	return nil
+}
+
+func (s Storage) insertTags(ctx context.Context, tx pgx.Tx, audioID int64, tags []string) error {
+	tagsInsertSQL, args := buildTagsInsertSQL(audioID, tags)
+	res, err := tx.Exec(ctx, tagsInsertSQL, args...)
+	if err != nil {
+		if isDuplicateTags(err) {
+			return meta.ErrDuplicateTags
+		} else {
+			return err
+		}
+	}
+
+	tagsLen := len(tags)
+	if affected := res.RowsAffected(); affected != int64(tagsLen) {
+		return fmt.Errorf("unexpected number of rows is affected: expected %v, got %v", tagsLen, affected)
 	}
 
 	return nil
@@ -82,8 +101,8 @@ func buildTagsInsertSQL(audioID int64, tags []string) (string, []any) {
 	const tagArgOffset = 4
 
 	for i, tag := range tags[1:] {
-		idArg := i + idArgOffset
-		tagArg := i + tagArgOffset
+		idArg := idArgOffset + i*2
+		tagArg := tagArgOffset + i*2
 		fmt.Fprintf(b, `, ($%d, $%d)`, idArg, tagArg)
 		args = append(args, audioID, tag)
 	}
@@ -91,4 +110,16 @@ func buildTagsInsertSQL(audioID int64, tags []string) (string, []any) {
 	b.WriteString(";")
 
 	return b.String(), args
+}
+
+func isDuplicateTags(err error) bool {
+	pgErr, ok := errors.AsType[*pgconn.PgError](err)
+	if !ok {
+		return false
+	}
+	if pgErr.Code != pgerrcode.UniqueViolation {
+		return false
+	}
+	const uniqueConstraintName = "audio_tags_audio_id_tag_key"
+	return pgErr.ConstraintName == uniqueConstraintName
 }
